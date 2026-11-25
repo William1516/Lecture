@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tom et l’abeille</title>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:#fff4d6;font-family:"Trebuchet MS",Verdana,sans-serif;color:#3b2a1a}
+body{display:flex;flex-direction:column;max-width:560px;margin:0 auto;padding:12px 14px 16px;overflow-x:hidden}
+header{display:flex;justify-content:space-between;align-items:center;font-weight:700}
+#stars{background:#fff;border-radius:999px;padding:6px 14px;font-size:1.1rem}
+h1{font-size:1.15rem;margin:0}
+#pic{font-size:7.5rem;text-align:center;margin:8px 0 0;line-height:1.1}
+#pic.bounce{animation:bounce .8s}
+#card{background:#fff;border-radius:22px;padding:22px 14px;text-align:center;font-size:2.1rem;line-height:1.7;box-shadow:0 4px 0 #f0d68a}
+.w{position:relative;display:inline-block;padding:0 5px;margin:0 1px;border-radius:10px;color:#9a8b78}
+.w.cur{color:#3b2a1a;background:#ffe9a3}
+.w.ok{color:#1b8a4b}
+.w.ko{color:#d9480f;background:#ffe0cc}
+.w.pop{animation:pop .5s}
+.w.pop::after{content:"⭐";position:absolute;top:-.6em;left:50%;font-size:1.2rem;animation:up .9s forwards}
+#bubble{min-height:3.4em;margin:12px 4px 0;text-align:center;font-size:1.25rem;font-weight:700}
+#bubble.err{color:#d9480f}#bubble.good{color:#1b8a4b}
+.bar{display:flex;gap:12px;justify-content:center;align-items:center;margin-top:auto;padding-top:10px}
+button{font:inherit;border:0;border-radius:999px;cursor:pointer;box-shadow:0 4px 0 rgba(0,0,0,.18)}
+#listen,#next{background:#fff;font-size:2rem;width:72px;height:72px}
+#mic{background:#2f9e44;color:#fff;font-size:2.8rem;width:104px;height:104px}
+#mic.on{background:#e03131;animation:pulse 1.2s infinite}
+#next.go{background:#ffd43b;animation:pulse 1s infinite}
+button:disabled{opacity:.35}
+.fall{position:fixed;top:-2rem;font-size:2rem;pointer-events:none;animation:fall 2s ease-in forwards}
+@keyframes pop{0%{transform:scale(1)}40%{transform:scale(1.5)}100%{transform:scale(1)}}
+@keyframes up{from{opacity:1;transform:translate(-50%,0)}to{opacity:0;transform:translate(-50%,-1.6em)}}
+@keyframes bounce{0%,100%{transform:translateY(0)}30%{transform:translateY(-22px)}60%{transform:translateY(0)}80%{transform:translateY(-8px)}}
+@keyframes pulse{50%{transform:scale(1.08)}}
+@keyframes fall{to{transform:translateY(110vh) rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important}}
+</style>
+</head>
+<body>
+<header><h1>Tom et l’abeille</h1><div id="stars">⭐ 0</div></header>
+<div id="pic"></div>
+<div id="card" aria-live="polite"></div>
+<div id="bubble"></div>
+<div class="bar">
+<button id="listen" aria-label="Écouter la page">🔊</button>
+<button id="mic" aria-label="Lire à voix haute">🎤</button>
+<button id="next" aria-label="Page suivante" disabled>➡️</button>
+</div>
+<script>
+(function(){
+var PAGES=[["🐻","Tom est un petit ours."],["🍯","Il aime le miel doré."],["🌳","Un jour, il monte dans un arbre."],["🐝","Une abeille vole vers lui."],["👋","Tom dit : bonjour, abeille !"],["🌈","Ils mangent le miel ensemble. Quelle belle journée !"]];
+var $=function(i){return document.getElementById(i)};
+var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+var pi=0,tokens,norm,st,pos,base,stars=0,listening=false,busy=false,rec=null,justOk={},done=false;
+function n(s){return s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[’']/g,"").replace(/[^a-z0-9]/g,"")}
+function say(t,cls){var b=$("bubble");b.textContent=t;b.className=cls||""}
+function speak(t,cb){
+var fired=false;function end(){if(!fired){fired=true;cb&&cb()}}
+try{speechSynthesis.cancel();var u=new SpeechSynthesisUtterance(t);u.lang="fr-FR";u.rate=.75;u.onend=end;u.onerror=end;speechSynthesis.speak(u);setTimeout(end,6000)}catch(e){end()}
+}
+function load(){
+if(pi>=PAGES.length){return finish()}
+var p=PAGES[pi];tokens=p[1].split(/\s+/);norm=tokens.map(n);
+st=tokens.map(function(){return ""});pos=0;base=0;done=false;justOk={};
+$("pic").textContent=p[0];$("next").disabled=true;$("next").className="";
+say("Appuie sur le micro et lis la phrase.");render();
+}
+function render(){
+var c=$("card");c.innerHTML="";
+tokens.forEach(function(t,i){
+var s=document.createElement("span");
+s.className="w "+(st[i]||"")+(i===pos&&!done?" cur":"")+(justOk[i]?" pop":"");
+s.textContent=t;c.appendChild(s);c.appendChild(document.createTextNode(" "));
+});
+justOk={};$("stars").textContent="⭐ "+stars;
+}
+function stopRec(){listening=false;busy=false;$("mic").className="";try{rec&&rec.abort()}catch(e){}}
+function listen(){
+if(!SR){say("Ton navigateur ne comprend pas la voix. Ouvre la page dans Chrome.","err");return}
+if(done)return;
+listening=true;busy=false;$("mic").className="on";base=pos;
+rec=new SR();rec.lang="fr-FR";rec.continuous=false;rec.interimResults=true;
+rec.onresult=function(e){
+var t="",fin=false;
+for(var i=0;i<e.results.length;i++){t+=e.results[i][0].transcript+" ";fin=e.results[i].isFinal}
+handle(t,fin);
+};
+rec.onerror=function(e){
+if(e.error==="not-allowed"||e.error==="service-not-allowed"){stopRec();say("Autorise le micro dans Chrome.","err")}
+};
+rec.onend=function(){if(listening&&!busy&&!done){setTimeout(listen,150)}};
+try{rec.start();say("Je t’écoute… 👂")}catch(e){}
+}
+function handle(text,fin){
+if(busy||done)return;
+var hs=text.split(/\s+/).map(n).filter(Boolean),i=base;
+for(var k=0;k<hs.length&&i<tokens.length;k++){
+if(norm[i]===""){i++;k--;continue}
+if(hs[k]===norm[i]){if(st[i]!=="ok"){stars++;justOk[i]=1}st[i]="ok";i++}
+else if(fin){return wrong(i)}
+}
+pos=Math.max(pos,i);
+while(pos<tokens.length&&norm[pos]==="")pos++;
+render();
+if(pos>=tokens.length)finishPage();
+}
+function wrong(i){
+busy=true;pos=i;st[i]="ko";try{rec.abort()}catch(e){}
+var w=tokens[i].replace(/[.,;:!?]/g,"");
+render();say("Presque ! On dit : « "+w+" ». À toi !","err");
+speak(w,function(){busy=false;st[i]="";render();if(listening)listen()});
+}
+function finishPage(){
+done=true;stopRec();render();
+$("pic").classList.remove("bounce");void $("pic").offsetWidth;$("pic").classList.add("bounce");
+say(pi===PAGES.length-1?"Bravo ! Tu as lu toute l’histoire ! 🎉":"Bravo ! Tu as très bien lu ! 🎉","good");
+confetti();speak("Bravo !");
+$("next").disabled=false;$("next").className="go";
+}
+function confetti(){
+var e=["⭐","🎉","✨","🌟","🎈"];
+for(var i=0;i<22;i++){var s=document.createElement("span");s.className="fall";s.textContent=e[i%e.length];s.style.left=(Math.random()*92)+"%";s.style.animationDelay=(Math.random()*.6)+"s";document.body.appendChild(s);(function(x){setTimeout(function(){x.remove()},3000)})(s)}
+}
+function finish(){
+$("pic").textContent="🏆";$("card").textContent="Fin ! Tu as gagné "+stars+" étoiles.";
+say("Tu es un champion de la lecture ! 🎉","good");$("next").disabled=false;$("next").textContent="🔁";confetti();pi=-1;
+}
+$("mic").addEventListener("click",function(){if(listening){stopRec();say("Pause. Appuie sur le micro pour continuer.")}else{listen()}});
+$("listen").addEventListener("click",function(){stopRec();say("Écoute bien… 🔊");speak(PAGES[pi>=0?pi:0][1],function(){say("À toi de lire !")})});
+$("next").addEventListener("click",function(){
+stopRec();
+if(pi===-1){pi=0;stars=0;$("next").textContent="➡️"}else{pi++}
+load();
+});
+load();
+})();
+</script>
+</body>
+</html>
