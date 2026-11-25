@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lecture à voix haute</title>
+<style>
+:root{--bg:#f6f3ee;--fg:#1d2433;--mut:#6b7385;--ok:#1f7a4d;--okbg:#d9f0e3;--ko:#b3261e;--kobg:#fbdcd8;--miss:#8a5a00;--missbg:#fdeccb;--card:#fff;--line:#ddd7cc;--acc:#1d2433;--accfg:#fff;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#14171f;--fg:#ece8df;--mut:#9aa1b3;--ok:#7fd4a4;--okbg:#17352a;--ko:#ff9a92;--kobg:#3d1d1b;--miss:#f2c36b;--missbg:#3a2c0c;--card:#1d212c;--line:#323848;--acc:#ece8df;--accfg:#14171f}}
+:root[data-theme="dark"]{--bg:#14171f;--fg:#ece8df;--mut:#9aa1b3;--ok:#7fd4a4;--okbg:#17352a;--ko:#ff9a92;--kobg:#3d1d1b;--miss:#f2c36b;--missbg:#3a2c0c;--card:#1d212c;--line:#323848;--acc:#ece8df;--accfg:#14171f}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg);font-family:Georgia,"Iowan Old Style",serif}
+main{max-width:640px;margin:0 auto;padding:20px 18px 120px}
+h1{font-size:1.5rem;margin:0 0 4px}
+p.sub{margin:0 0 18px;color:var(--mut);font:0.9rem system-ui,sans-serif}
+#reader{font-size:1.4rem;line-height:2;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.w{padding:2px 3px;border-radius:5px;color:var(--mut);cursor:default}
+.w.cur{color:var(--fg);text-decoration:underline;text-decoration-thickness:2px}
+.w.ok{color:var(--ok);background:var(--okbg)}
+.w.ko{color:var(--ko);background:var(--kobg);cursor:pointer}
+.w.miss{color:var(--miss);background:var(--missbg);cursor:pointer}
+textarea{width:100%;min-height:150px;font:1.1rem/1.5 Georgia,serif;padding:12px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:var(--fg)}
+#status{font:0.9rem system-ui,sans-serif;color:var(--mut);margin:12px 2px;min-height:1.3em}
+#errs{font:0.95rem/1.5 system-ui,sans-serif;margin-top:6px;padding:0;list-style:none}
+#errs li{display:flex;gap:10px;align-items:center;justify-content:space-between;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px}
+#errs b{color:var(--ok)}#errs s{color:var(--ko)}
+button{font:600 1rem system-ui,sans-serif;border:1px solid var(--line);background:var(--card);color:var(--fg);border-radius:999px;padding:10px 16px;min-height:44px}
+button.main{background:var(--acc);color:var(--accfg);border-color:var(--acc)}
+button.rec{background:var(--ko);border-color:var(--ko);color:#fff}
+button:focus-visible,textarea:focus-visible{outline:3px solid var(--ok);outline-offset:2px}
+#bar{position:fixed;left:0;right:0;bottom:0;background:var(--bg);border-top:1px solid var(--line);padding:12px 18px calc(12px + env(safe-area-inset-bottom,0px));display:flex;gap:10px;justify-content:center}
+#bar button{flex:1;max-width:220px}
+</style>
+</head>
+<body>
+<main>
+<h1>Lecture à voix haute</h1>
+<p class="sub">Lisez le texte à voix haute. Les mots bien prononcés passent en vert, les erreurs en rouge, les mots oubliés en orange. Touchez un mot rouge ou orange pour entendre la bonne prononciation.</p>
+<div id="reader" aria-live="polite"></div>
+<div id="status"></div>
+<ul id="errs"></ul>
+<div id="edit" hidden>
+<textarea id="txt" aria-label="Texte à lire"></textarea>
+</div>
+</main>
+<div id="bar">
+<button id="mic" class="main">Commencer</button>
+<button id="reset">Recommencer</button>
+<button id="editBtn">Modifier le texte</button>
+</div>
+<script>
+(function(){
+var DEFAULT="Hier soir, le boulanger du quartier a préparé des brioches pour tous les voisins. Il pensait que la neige empêcherait les gens de sortir, mais une longue file s’est formée devant la porte de la boutique.";
+var $=function(i){return document.getElementById(i)};
+var reader=$("reader"),statusEl=$("status"),errs=$("errs"),mic=$("mic"),txt=$("txt"),edit=$("edit"),editBtn=$("editBtn");
+var tokens=[],norm=[],state=[],heard=[],pos=0,rec=null,active=false,finalText="",interimText="";
+var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+function n(s){return s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[’']/g,"").replace(/[^a-z0-9]/g,"")}
+function load(t){
+tokens=t.trim().split(/\s+/).filter(Boolean);
+norm=tokens.map(n);
+reset();
+}
+function reset(){
+state=tokens.map(function(){return ""});heard=tokens.map(function(){return ""});pos=0;finalText="";interimText="";
+render();
+}
+function align(text){
+var hs=text.split(/\s+/).map(n).filter(Boolean);
+state=tokens.map(function(){return ""});heard=tokens.map(function(){return ""});
+var i=0;
+for(var k=0;k<hs.length&&i<tokens.length;k++){
+var h=hs[k];
+if(norm[i]===""){state[i]="ok";i++;k--;continue}
+if(h===norm[i]){state[i]="ok";i++}
+else if(i+1<tokens.length&&h===norm[i+1]){state[i]="miss";state[i+1]="ok";i+=2}
+else{state[i]="ko";heard[i]=h;i++}
+}
+pos=i;
+}
+function render(){
+reader.innerHTML="";
+tokens.forEach(function(t,i){
+var s=document.createElement("span");
+s.className="w "+state[i]+(i===pos&&active?" cur":"");
+s.textContent=t+" ";
+s.addEventListener("click",function(){if(state[i]==="ko"||state[i]==="miss")speak(t)});
+reader.appendChild(s);
+});
+errs.innerHTML="";
+tokens.forEach(function(t,i){
+if(state[i]==="ko"||state[i]==="miss"){
+var li=document.createElement("li");
+var d=document.createElement("span");
+var clean=t.replace(/[.,;:!?«»"]/g,"");
+d.innerHTML=state[i]==="ko"?"Attendu : <b></b> · entendu : <s></s>":"Mot oublié : <b></b>";
+d.querySelector("b").textContent=clean;
+if(state[i]==="ko")d.querySelector("s").textContent=heard[i];
+var b=document.createElement("button");b.textContent="Écouter";
+b.addEventListener("click",function(){speak(clean)});
+li.appendChild(d);li.appendChild(b);errs.appendChild(li);
+}
+});
+var done=pos>=tokens.length;
+var bad=state.filter(function(s){return s==="ko"||s==="miss"}).length;
+if(done&&tokens.length){statusEl.textContent=bad?"Terminé : "+bad+" mot(s) à retravailler.":"Terminé : lecture sans erreur.";}
+}
+function speak(w){
+try{speechSynthesis.cancel();var u=new SpeechSynthesisUtterance(w);u.lang="fr-FR";u.rate=0.8;speechSynthesis.speak(u)}catch(e){}
+}
+function stop(){
+active=false;mic.textContent="Reprendre";mic.classList.remove("rec");
+try{rec&&rec.stop()}catch(e){}
+if(pos<tokens.length)statusEl.textContent="En pause.";
+render();
+}
+function start(){
+if(!SR){statusEl.textContent="La reconnaissance vocale n’est pas disponible dans ce navigateur. Ouvrez le lien dans Chrome (Android) ou Safari (iPhone).";return}
+rec=new SR();rec.lang="fr-FR";rec.continuous=true;rec.interimResults=true;
+rec.onresult=function(e){
+var f="",it="";
+for(var i=0;i<e.results.length;i++){var r=e.results[i];if(r.isFinal)f+=r[0].transcript+" ";else it+=r[0].transcript+" "}
+align(finalText+f+it);render();
+if(pos>=tokens.length)stop();
+};
+rec.onerror=function(e){
+if(e.error==="not-allowed"||e.error==="service-not-allowed"){statusEl.textContent="Micro refusé. Autorisez l’accès au micro dans les réglages du navigateur.";active=false;mic.textContent="Commencer";mic.classList.remove("rec")}
+};
+rec.onend=function(){
+if(active){var t=reader.textContent;finalText=lastText();try{rec.start()}catch(e){}}
+};
+active=true;mic.textContent="Pause";mic.classList.add("rec");statusEl.textContent="Je vous écoute…";
+finalText=lastText();
+try{rec.start()}catch(e){}
+render();
+}
+var snapshot="";
+function lastText(){
+// reconstruit le texte déjà validé à partir des mots reconnus avant redémarrage
+var out=[];for(var i=0;i<pos;i++){out.push(state[i]==="ko"?heard[i]:norm[i])}
+snapshot=out.join(" ");return snapshot+" ";
+}
+mic.addEventListener("click",function(){active?stop():start()});
+$("reset").addEventListener("click",function(){if(active)stop();mic.textContent="Commencer";statusEl.textContent="";reset()});
+editBtn.addEventListener("click",function(){
+if(edit.hidden){if(active)stop();edit.hidden=false;txt.value=tokens.join(" ");editBtn.textContent="Valider le texte"}
+else{edit.hidden=true;editBtn.textContent="Modifier le texte";load(txt.value||DEFAULT);mic.textContent="Commencer";statusEl.textContent=""}
+});
+load(DEFAULT);
+if(!SR)statusEl.textContent="La reconnaissance vocale n’est pas disponible ici. Utilisez Chrome (Android) ou Safari (iPhone).";
+})();
+</script>
+</body>
+</html>
