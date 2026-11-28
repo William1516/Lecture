@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lulu le hibou lit avec toi</title>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<style>
+:root{--bg:#e8f5ff;--ink:#1b2a49;--sun:#ffc93c;--ok:#1fa968;--no:#ff5c8a;--card:#fff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:500 20px/1.5 'Baloo 2',system-ui,sans-serif;min-height:100vh}
+main{max-width:640px;margin:0 auto;padding:16px}
+h1{font-size:28px;margin:8px 0}
+.owl{font-size:64px;line-height:1;display:inline-block}
+.owl.talk{animation:hop .5s 2}
+@keyframes hop{50%{transform:translateY(-12px) rotate(-6deg)}}
+@media (prefers-reduced-motion:reduce){.owl.talk{animation:none}}
+.bubble{background:var(--card);border-radius:20px;padding:12px 16px;margin:8px 0;border:3px solid var(--ink)}
+button,label.btn{font:700 20px 'Baloo 2',system-ui,sans-serif;background:var(--sun);color:var(--ink);border:3px solid var(--ink);border-radius:16px;padding:12px 18px;margin:6px 6px 6px 0;display:inline-block;cursor:pointer}
+button:focus-visible,label.btn:focus-within{outline:4px solid var(--ink);outline-offset:2px}
+button.big{font-size:24px;background:var(--ok);color:#fff}
+textarea{width:100%;min-height:120px;font:500 18px 'Baloo 2',system-ui,sans-serif;border:3px solid var(--ink);border-radius:16px;padding:10px}
+#read{display:none}
+#text{font-size:28px;line-height:1.9;background:var(--card);border-radius:20px;padding:16px;border:3px solid var(--ink)}
+.s{display:block;opacity:.45}
+.s.cur{opacity:1}
+.w{display:inline-block;padding:0 4px;margin:0 1px;border-radius:8px;cursor:pointer}
+.w.now{background:var(--sun)}
+.w.ok{background:#c9f2dd}
+.w.bad{background:#ffd0de;text-decoration:underline wavy var(--no)}
+.w.miss{background:#ffd0de}
+#stars{font-size:26px;letter-spacing:2px}
+small{opacity:.75}
+</style>
+</head>
+<body>
+<main>
+<h1><span class="owl" id="owl">🦉</span> Lulu lit avec toi</h1>
+<div class="bubble" id="say">Bonjour ! Prends une photo d'une page de ton livre, et on lit ensemble.</div>
+
+<section id="setup">
+  <label class="btn">📷 Photographier une page
+    <input type="file" id="photo" accept="image/*" capture="environment" hidden>
+  </label>
+  <p><small>Ou écris / colle le texte ici :</small></p>
+  <textarea id="manual" placeholder="Il était une fois un petit chat. Il aimait les poissons."></textarea>
+  <button id="go">C'est parti !</button>
+  <p id="ocrmsg"><small></small></p>
+  <div id="cropbox" style="display:none"><p><small>Entoure avec ton doigt le texte à lire (une bulle ou une phrase).</small></p><canvas id="cv" style="width:100%;touch-action:none;border:3px solid var(--ink);border-radius:12px"></canvas><button id="ocrgo">Lire ce cadre</button></div>
+</section>
+
+<section id="read">
+  <div id="stars" aria-live="polite"></div>
+  <div id="text"></div>
+  <button class="big" id="mic">🎤 Je lis</button>
+  <button id="back">↩ Autre page</button>
+  <p><small>Touche un mot pour l'entendre et connaître son sens.</small></p>
+</section>
+</main>
+
+<script>
+const $=id=>document.getElementById(id);
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+const norm=w=>w.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]/g,'');
+function lev(a,b){const m=[];for(let i=0;i<=a.length;i++){m[i]=[i];}for(let j=0;j<=b.length;j++)m[0][j]=j;
+ for(let i=1;i<=a.length;i++)for(let j=1;j<=b.length;j++)m[i][j]=Math.min(m[i-1][j]+1,m[i][j-1]+1,m[i-1][j-1]+(a[i-1]==b[j-1]?0:1));return m[a.length][b.length]}
+const sim=(a,b)=>a===b?1:1-lev(a,b)/Math.max(a.length,b.length,1);
+
+let sents=[],si=0,st=[],listening=false,rec=null,base=0,stars=0,tries=0,busy=false,silence=null;
+
+function say(t,talk=true){$('say').textContent=t;if(talk){const o=$('owl');o.classList.remove('talk');void o.offsetWidth;o.classList.add('talk')}}
+function speak(t,rate=.85){return new Promise(r=>{if(!window.speechSynthesis)return r();
+ const u=new SpeechSynthesisUtterance(t);u.lang='fr-FR';u.rate=rate;u.onend=u.onerror=r;speechSynthesis.cancel();speechSynthesis.speak(u)})}
+
+// --- Scan : on entoure le texte, puis OCR sur le téléphone
+let img=null,sel=null,s0=null;const cv=$('cv');
+$('photo').onchange=e=>{
+ const f=e.target.files[0];if(!f)return;
+ img=new Image();
+ img.onload=()=>{const sc=Math.min(1,1600/Math.max(img.width,img.height));cv.width=Math.round(img.width*sc);cv.height=Math.round(img.height*sc);sel=null;draw();$('cropbox').style.display='block';$('ocrmsg').textContent='';};
+ img.src=URL.createObjectURL(f);
+};
+function draw(){const c=cv.getContext('2d');c.drawImage(img,0,0,cv.width,cv.height);if(sel){c.strokeStyle='#ff5c8a';c.lineWidth=Math.max(5,cv.width/120);c.strokeRect(sel.x,sel.y,sel.w,sel.h)}}
+const pt=e=>{const r=cv.getBoundingClientRect();return{x:(e.clientX-r.left)*cv.width/r.width,y:(e.clientY-r.top)*cv.height/r.height}};
+cv.onpointerdown=e=>{cv.setPointerCapture(e.pointerId);s0=pt(e);sel={x:s0.x,y:s0.y,w:0,h:0}};
+cv.onpointermove=e=>{if(!s0)return;const p=pt(e);sel={x:Math.min(s0.x,p.x),y:Math.min(s0.y,p.y),w:Math.abs(p.x-s0.x),h:Math.abs(p.y-s0.y)};draw()};
+cv.onpointerup=()=>{s0=null};
+$('ocrgo').onclick=async()=>{
+ const f=img.width/cv.width;
+ const r=sel&&sel.w>30&&sel.h>30?sel:{x:0,y:0,w:cv.width,h:cv.height};
+ const sx=r.x*f,sy=r.y*f,sw=r.w*f,sh=r.h*f,k=Math.min(3,Math.max(1,1200/sw));
+ const c=document.createElement('canvas');c.width=Math.round(sw*k);c.height=Math.round(sh*k);
+ const x=c.getContext('2d');x.drawImage(img,sx,sy,sw,sh,0,0,c.width,c.height);
+ const d=x.getImageData(0,0,c.width,c.height),p=d.data;let lo=255,hi=0;
+ for(let i=0;i<p.length;i+=4){const g=.3*p[i]+.59*p[i+1]+.11*p[i+2];p[i]=g;if(g<lo)lo=g;if(g>hi)hi=g}
+ const m=255/Math.max(hi-lo,1);
+ for(let i=0;i<p.length;i+=4){const v=Math.max(0,Math.min(255,(p[i]-lo)*m));p[i]=p[i+1]=p[i+2]=v}
+ x.putImageData(d,0,0);
+ $('ocrmsg').textContent='Lulu lit le cadre… (la première fois, c\'est un peu long)';
+ try{
+  const w=await Tesseract.createWorker('fra');
+  await w.setParameters({tessedit_pageseg_mode:'6'});
+  const res=await w.recognize(c);await w.terminate();
+  const ok=(res.data.words||[]).filter(t=>t.confidence>=60&&/\p{L}/u.test(t.text)).map(t=>t.text);
+  if(ok.length<2){$('ocrmsg').textContent='Je n\'arrive pas à lire ce cadre. Entoure moins de texte, rapproche-toi, ou écris le texte.';return}
+  $('manual').value=ok.join(' ').replace(/\s+([.,!?])/g,'$1');
+  $('ocrmsg').textContent='Texte trouvé. Corrige-le si besoin, puis appuie sur « C\'est parti ».';
+ }catch(err){$('ocrmsg').textContent='Le scan a échoué. Tu peux écrire le texte à la main.'}
+};
+
+// --- Lecture
+$('go').onclick=()=>{
+ const t=$('manual').value.trim();
+ if(!t){say('Il me faut un texte !');return}
+ sents=(t.match(/[^.!?…]+[.!?…]*/g)||[]).map(s=>s.trim()).filter(Boolean);
+ si=0;stars=0;$('stars').textContent='';
+ $('text').innerHTML=sents.map((s,i)=>'<span class="s" id="s'+i+'">'+s.split(/\s+/).map((w,j)=>'<span class="w" data-i="'+i+'" data-j="'+j+'">'+w+'</span>').join(' ')+'</span>').join(' ');
+ $('setup').style.display='none';$('read').style.display='block';
+ startSentence();
+};
+$('back').onclick=()=>{stopRec();$('read').style.display='none';$('setup').style.display='block';say('Prends une autre page !')};
+
+function words(i){return sents[i].split(/\s+/)}
+function startSentence(){
+ tries=0;base=0;resetMarks();
+ document.querySelectorAll('.s').forEach(e=>e.classList.remove('cur'));
+ $('s'+si).classList.add('cur');
+ say('À toi de lire cette phrase !');
+}
+function resetMarks(){st=words(si).map(()=>null);paint(0)}
+function paint(p){
+ const els=$('s'+si).querySelectorAll('.w');
+ els.forEach((e,j)=>{e.className='w'+(st[j]?' '+st[j]:'')+(j===p&&!st[j]?' now':'')});
+}
+
+// --- Micro
+$('mic').onclick=()=>{listening?stopRec():startRec()};
+function startRec(){
+ if(!SR){say('Ce navigateur ne sait pas écouter. Utilise Chrome.');return}
+ listening=true;$('mic').textContent='⏸ Pause';
+ rec=new SR();rec.lang='fr-FR';rec.continuous=true;rec.interimResults=true;
+ rec.onresult=onResult;
+ rec.onend=()=>{if(listening&&!busy)try{rec.start()}catch(e){}};
+ rec.onerror=e=>{if(e.error==='not-allowed'){say('Autorise le micro pour que je t\'entende.');stopRec()}};
+ try{rec.start()}catch(e){}
+}
+function stopRec(){listening=false;$('mic').textContent='🎤 Je lis';try{rec&&rec.stop()}catch(e){}}
+
+function onResult(ev){
+ if(busy)return;
+ let spoken=[];
+ for(let i=0;i<ev.results.length;i++)spoken.push(...ev.results[i][0].transcript.trim().split(/\s+/).filter(Boolean));
+ const mine=spoken.slice(base);
+ const target=words(si),tn=target.map(norm);
+ st=target.map(()=>null);
+ let p=0,used=0;
+ for(const raw of mine){
+  if(p>=tn.length)break;
+  const s=norm(raw);if(!s){used++;continue}
+  let best=-1,bs=0;
+  for(let j=p;j<Math.min(p+3,tn.length);j++){const v=sim(s,tn[j]);if(v>bs){bs=v;best=j}}
+  if(best>=0&&bs>=.7){for(let k=p;k<best;k++)st[k]='miss';st[best]=bs>=.99?'ok':'bad';p=best+1}
+  else{st[p]='bad';p++}
+  used++;
+ }
+ paint(p);
+ clearTimeout(silence);
+ if(p>=tn.length){endSentence(base+used)}
+ else if(p>=1){silence=setTimeout(()=>{for(let k=p;k<tn.length;k++)st[k]='miss';endSentence(base+used)},3500)}
+}
+
+async function endSentence(newBase){
+ if(busy)return;busy=true;clearTimeout(silence);try{rec.stop()}catch(e){}
+ paint(-1);
+ const target=words(si);
+ const wrong=target.filter((w,j)=>st[j]&&st[j]!=='ok');
+ if(!wrong.length){
+  stars++;$('stars').textContent='⭐'.repeat(Math.min(stars,15));
+  say(['Bravo !','Super lecture !','Tu es un champion !','Magnifique !'][stars%4]);
+  await speak('Bravo !',1);
+  next(newBase);
+ }else if(tries>=1){
+  say('Tu as bien essayé ! On passe à la suite.');
+  await speak('Tu as bien essayé ! On passe à la suite.',1);
+  next(newBase);
+ }else{
+  tries++;
+  say('Presque ! Écoute bien : '+wrong.map(w=>w.replace(/[^\p{L}'-]/gu,'')).join(', '));
+  for(const w of wrong){await speak(w.replace(/[^\p{L}'-]/gu,''),.6)}
+  await speak('Maintenant, la phrase.',.9);await speak(sents[si],.8);
+  say('À toi ! Essayons encore une fois.');
+  base=newBase;resetMarks();
+ }
+ busy=false;
+ if(listening)try{rec.start()}catch(e){}
+}
+function next(newBase){
+ si++;base=newBase;
+ if(si>=sents.length){say('Tu as fini la page ! '+'⭐'.repeat(stars));stopRec();si=sents.length-1;return}
+ startSentence();
+}
+
+// --- Sens d'un mot
+$('text').onclick=async e=>{
+ const el=e.target.closest('.w');if(!el)return;
+ const w=el.textContent.replace(/[^\p{L}'-]/gu,'');if(!w)return;
+ const wasListening=listening;if(wasListening){busy=true;try{rec.stop()}catch(x){}}
+ say('« '+w+' » : je cherche…');
+ await speak(w,.7);
+ let def='Je ne connais pas ce mot. Demande à un grand !';
+ try{
+  const r=await fetch('https://fr.wiktionary.org/api/rest_v1/page/definition/'+encodeURIComponent(w.toLowerCase()));
+  const j=await r.json();
+  const d=(j.fr||[])[0];
+  if(d&&d.definitions&&d.definitions[0]){
+   const tmp=document.createElement('div');tmp.innerHTML=d.definitions[0].definition;
+   def=tmp.textContent.trim();
+  }
+ }catch(err){}
+ say(w+' : '+def);
+ await speak(def,.85);
+ if(wasListening){busy=false;try{rec.start()}catch(x){}}
+};
+</script>
+</body>
+</html>
