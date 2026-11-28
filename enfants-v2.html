@@ -45,15 +45,22 @@ small{opacity:.75}
   </label>
   <p><small>Ou écris / colle le texte ici :</small></p>
   <textarea id="manual" placeholder="Il était une fois un petit chat. Il aimait les poissons."></textarea>
-  <button id="go">C'est parti !</button>
+  <button id="go">Lire cette page seule</button>
   <p id="ocrmsg"><small></small></p>
+  <div id="cropbox" style="display:none"><p><small>Entoure avec ton doigt le texte à lire (une bulle ou une phrase).</small></p><canvas id="cv" style="width:100%;touch-action:none;border:3px solid var(--ink);border-radius:12px"></canvas><button id="ocrgo">Lire ce cadre</button></div>
+  <div class="bubble"><b>Mes livres</b><br>
+   <input id="bname" placeholder="Titre du livre" style="width:100%;font:inherit;padding:8px;border:3px solid var(--ink);border-radius:12px"><br>
+   <button id="addp">➕ Ajouter cette page au livre</button><br>
+   <select id="blist" style="font:inherit;padding:8px;border:3px solid var(--ink);border-radius:12px;max-width:100%"></select>
+   <button id="readbook">📖 Lire ce livre</button><button id="delbook">🗑</button>
+  </div>
 </section>
 
 <section id="read">
   <div id="stars" aria-live="polite"></div>
   <div id="text"></div>
   <button class="big" id="mic">🎤 Je lis</button>
-  <button id="back">↩ Autre page</button>
+  <button id="tog">👁 Voir le texte</button><button id="back">↩ Retour</button>
   <p><small>Touche un mot pour l'entendre et connaître son sens.</small></p>
 </section>
 </main>
@@ -72,27 +79,77 @@ function say(t,talk=true){$('say').textContent=t;if(talk){const o=$('owl');o.cla
 function speak(t,rate=.85){return new Promise(r=>{if(!window.speechSynthesis)return r();
  const u=new SpeechSynthesisUtterance(t);u.lang='fr-FR';u.rate=rate;u.onend=u.onerror=r;speechSynthesis.cancel();speechSynthesis.speak(u)})}
 
-// --- Scan (OCR sur le téléphone)
-$('photo').onchange=async e=>{
+// --- Scan : on entoure le texte, puis OCR sur le téléphone
+let img=null,sel=null,s0=null;const cv=$('cv');
+$('photo').onchange=e=>{
  const f=e.target.files[0];if(!f)return;
- $('ocrmsg').textContent='Lulu lit la page… (la première fois, c\'est un peu long)';
+ img=new Image();
+ img.onload=()=>{const sc=Math.min(1,1600/Math.max(img.width,img.height));cv.width=Math.round(img.width*sc);cv.height=Math.round(img.height*sc);sel=null;draw();$('cropbox').style.display='block';$('ocrmsg').textContent='';};
+ img.src=URL.createObjectURL(f);
+};
+function draw(){const c=cv.getContext('2d');c.drawImage(img,0,0,cv.width,cv.height);if(sel){c.strokeStyle='#ff5c8a';c.lineWidth=Math.max(5,cv.width/120);c.strokeRect(sel.x,sel.y,sel.w,sel.h)}}
+const pt=e=>{const r=cv.getBoundingClientRect();return{x:(e.clientX-r.left)*cv.width/r.width,y:(e.clientY-r.top)*cv.height/r.height}};
+cv.onpointerdown=e=>{cv.setPointerCapture(e.pointerId);s0=pt(e);sel={x:s0.x,y:s0.y,w:0,h:0}};
+cv.onpointermove=e=>{if(!s0)return;const p=pt(e);sel={x:Math.min(s0.x,p.x),y:Math.min(s0.y,p.y),w:Math.abs(p.x-s0.x),h:Math.abs(p.y-s0.y)};draw()};
+cv.onpointerup=()=>{s0=null};
+$('ocrgo').onclick=async()=>{
+ const f=img.width/cv.width;
+ const r=sel&&sel.w>30&&sel.h>30?sel:{x:0,y:0,w:cv.width,h:cv.height};
+ const sx=r.x*f,sy=r.y*f,sw=r.w*f,sh=r.h*f,k=Math.min(3,Math.max(1,1200/sw));
+ const c=document.createElement('canvas');c.width=Math.round(sw*k);c.height=Math.round(sh*k);
+ const x=c.getContext('2d');x.drawImage(img,sx,sy,sw,sh,0,0,c.width,c.height);
+ const d=x.getImageData(0,0,c.width,c.height),p=d.data;let lo=255,hi=0;
+ for(let i=0;i<p.length;i+=4){const g=.3*p[i]+.59*p[i+1]+.11*p[i+2];p[i]=g;if(g<lo)lo=g;if(g>hi)hi=g}
+ const m=255/Math.max(hi-lo,1);
+ for(let i=0;i<p.length;i+=4){const v=Math.max(0,Math.min(255,(p[i]-lo)*m));p[i]=p[i+1]=p[i+2]=v}
+ x.putImageData(d,0,0);
+ $('ocrmsg').textContent='Lulu lit le cadre… (la première fois, c\'est un peu long)';
  try{
-  const r=await Tesseract.recognize(f,'fra');
-  $('manual').value=r.data.text.replace(/-\n/g,'').replace(/\s*\n\s*/g,' ').trim();
-  $('ocrmsg').textContent='Texte trouvé. Corrige-le si besoin, puis appuie sur « C\'est parti ».';
+  const w=await Tesseract.createWorker('fra');
+  await w.setParameters({tessedit_pageseg_mode:'6'});
+  const res=await w.recognize(c);await w.terminate();
+  const ok=(res.data.words||[]).filter(t=>t.confidence>=60&&/\p{L}/u.test(t.text)).map(t=>t.text);
+  if(ok.length<2){$('ocrmsg').textContent='Je n\'arrive pas à lire ce cadre. Entoure moins de texte, rapproche-toi, ou écris le texte.';return}
+  $('manual').value=ok.join(' ').replace(/\s+([.,!?])/g,'$1');
+  $('ocrmsg').textContent='Texte trouvé. Corrige-le si besoin, puis ajoute-la à ton livre ou lis-la seule.';
  }catch(err){$('ocrmsg').textContent='Le scan a échoué. Tu peux écrire le texte à la main.'}
 };
 
 // --- Lecture
-$('go').onclick=()=>{
- const t=$('manual').value.trim();
+function launch(t){
  if(!t){say('Il me faut un texte !');return}
  sents=(t.match(/[^.!?…]+[.!?…]*/g)||[]).map(s=>s.trim()).filter(Boolean);
- si=0;stars=0;$('stars').textContent='';
+ si=0;stars=0;base=0;$('stars').textContent='';
  $('text').innerHTML=sents.map((s,i)=>'<span class="s" id="s'+i+'">'+s.split(/\s+/).map((w,j)=>'<span class="w" data-i="'+i+'" data-j="'+j+'">'+w+'</span>').join(' ')+'</span>').join(' ');
+ $('text').style.display='none';$('tog').textContent='👁 Voir le texte';
  $('setup').style.display='none';$('read').style.display='block';
- startSentence();
+ startSentence();startRec();
+}
+$('go').onclick=()=>launch($('manual').value.trim());
+$('tog').onclick=()=>{const h=$('text').style.display==='none';$('text').style.display=h?'block':'none';$('tog').textContent=h?'🙈 Cacher le texte':'👁 Voir le texte'};
+
+// --- Livres enregistrés (sur ce téléphone)
+const KEY='lulu_books';
+const lib=()=>{try{return JSON.parse(localStorage.getItem(KEY))||{}}catch(e){return{}}};
+const saveLib=l=>{try{localStorage.setItem(KEY,JSON.stringify(l))}catch(e){}};
+const esc=s=>s.replace(/[<>&"]/g,c=>'&#'+c.charCodeAt(0)+';');
+function renderLib(){const l=lib();$('blist').innerHTML=Object.keys(l).map(n=>'<option value="'+encodeURIComponent(n)+'">'+esc(n)+' ('+l[n].length+' p.)</option>').join('')||'<option value="">(aucun livre)</option>'}
+const cur=()=>decodeURIComponent($('blist').value||'');
+$('addp').onclick=()=>{
+ const n=$('bname').value.trim();let t=$('manual').value.trim();
+ if(!n||!t){$('ocrmsg').textContent='Écris le titre du livre et mets le texte de la page.';return}
+ if(!/[.!?…]$/.test(t))t+='.';
+ const l=lib();l[n]=(l[n]||[]).concat(t);saveLib(l);renderLib();
+ $('blist').value=encodeURIComponent(n);$('manual').value='';$('cropbox').style.display='none';
+ $('ocrmsg').textContent='Page '+l[n].length+' ajoutée à « '+n+' ». Photographie la suivante, ou lance la lecture.';
 };
+$('readbook').onclick=()=>{const p=lib()[cur()];if(!p){$('ocrmsg').textContent='Choisis un livre.';return}launch(p.join(' '))};
+$('delbook').onclick=()=>{const n=cur();if(n&&confirm('Supprimer « '+n+' » ?')){const l=lib();delete l[n];saveLib(l);renderLib()}};
+renderLib();
+
+function startScore(i,m){const t=words(i).map(norm);const n=Math.min(3,m.length,t.length);let s=0;for(let k=0;k<n;k++)s+=sim(norm(m[k]),t[k]);return s/n}
+function gotoSentence(b){si=b;tries=0;resetMarks();document.querySelectorAll('.s').forEach(e=>e.classList.remove('cur'));$('s'+si).classList.add('cur')}
+
 $('back').onclick=()=>{stopRec();$('read').style.display='none';$('setup').style.display='block';say('Prends une autre page !')};
 
 function words(i){return sents[i].split(/\s+/)}
@@ -100,7 +157,7 @@ function startSentence(){
  tries=0;base=0;resetMarks();
  document.querySelectorAll('.s').forEach(e=>e.classList.remove('cur'));
  $('s'+si).classList.add('cur');
- say('À toi de lire cette phrase !');
+ say('Lis ton livre à voix haute, je t\'écoute !');
 }
 function resetMarks(){st=words(si).map(()=>null);paint(0)}
 function paint(p){
@@ -126,6 +183,7 @@ function onResult(ev){
  let spoken=[];
  for(let i=0;i<ev.results.length;i++)spoken.push(...ev.results[i][0].transcript.trim().split(/\s+/).filter(Boolean));
  const mine=spoken.slice(base);
+ if(mine.length>=3&&mine.length<=6&&startScore(si,mine)<.7){let b=-1,bs=.75;for(let i=0;i<sents.length;i++){const v=startScore(i,mine);if(v>bs){bs=v;b=i}}if(b>=0&&b!==si)gotoSentence(b)}
  const target=words(si),tn=target.map(norm);
  st=target.map(()=>null);
  let p=0,used=0;
